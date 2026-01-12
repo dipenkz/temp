@@ -1,0 +1,71 @@
+name: Cloudflare Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [main]
+  pull_request:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      deployments: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build (static export)
+        run: npm run build
+        # next.config.ts must set: output: "export" so Next writes out/
+
+      - name: Deploy to Cloudflare Pages
+        id: cf
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ci-cd-static-page-preview
+          directory: out
+          gitHubToken: ${{ secrets.GITHUBTOKEN }}
+          branch: ${{ github.head_ref || github.ref_name }}
+
+      - name: Compute stable preview URL
+        id: url
+        run: |
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          # Normalize branch: lowercase and replace unsafe chars with '-'
+          SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
+          echo "url=https://${SAFE}.ci-cd-static-page-preview.pages.dev" >> $GITHUB_OUTPUT
+
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUBTOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            🚀 **Preview for `${{ github.head_ref || github.ref_name }}`**
+            🔗 ${{ steps.url.outputs.url }}
+
+      - name: Comment preview URL on Commit
+        if: github.event_name == 'push'
+        uses: peter-evans/commit-comment@v2
+        with:
+          token: ${{ secrets.GITHUBTOKEN }}
+          body: |
+            🚀 **Preview for `${{ github.ref_name }}`**
+            🔗 ${{ steps.url.outputs.url }}
