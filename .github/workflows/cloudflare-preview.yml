@@ -41,7 +41,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           projectName: ci-cd-static-page-preview
           directory: out
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          gitHubToken: ${{ secrets.GITHUBTOKEN }}
           branch: ${{ github.head_ref || github.ref_name }}
           wranglerVersion: 4
 
@@ -52,60 +52,74 @@ jobs:
           SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
           echo "url=https://${SAFE}.ci-cd-static-page-preview.pages.dev" >> $GITHUB_OUTPUT
 
-      # --- Count comments (commit comments + PR issue + PR review) ---
+      # --- Count comments (commit + PR issue + PR review) ---
       - name: Count comments
         id: count
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUBTOKEN }}
           script: |
-            const core = require('@actions/core');
             const { owner, repo } = context.repo;
             const branch =
               context.payload.pull_request?.head?.ref ||
               process.env.GITHUB_REF_NAME ||
               (context.ref || '').replace('refs/heads/', '');
-            console.log('Branch:', branch);
 
-            // list commits on branch
-            const commits = await github.paginate(github.rest.repos.listCommits, { owner, repo, sha: branch, per_page: 100 });
-            console.log('Commits on branch:', commits.length);
+            const commits = await github.paginate(
+              github.rest.repos.listCommits,
+              { owner, repo, sha: branch, per_page: 100 }
+            );
 
-            // count commit comments (iterate commits)
-            const commitComments = (await Promise.all(
-              commits.map(c => github.paginate(github.rest.repos.listCommentsForCommit, { owner, repo, commit_sha: c.sha, per_page: 100 }))
-            )).reduce((s, arr) => s + arr.length, 0);
+            const commit = (await Promise.all(
+              commits.map(c =>
+                github.paginate(
+                  github.rest.repos.listCommentsForCommit,
+                  { owner, repo, commit_sha: c.sha, per_page: 100 }
+                )
+              )
+            )).reduce((s, a) => s + a.length, 0);
 
-            // find PR (if any)
-            const prNumber = context.payload.pull_request?.number ||
-              (await github.rest.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: 'open', per_page: 1 })).data[0]?.number;
+            const pr =
+              context.payload.pull_request?.number ||
+              (await github.rest.pulls.list({
+                owner,
+                repo,
+                head: `${owner}:${branch}`,
+                state: 'open',
+                per_page: 1
+              })).data[0]?.number;
 
-            const issueComments = prNumber
-              ? (await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 })).length
+            const issue = pr
+              ? (await github.paginate(
+                  github.rest.issues.listComments,
+                  { owner, repo, issue_number: pr, per_page: 100 }
+                )).length
               : 0;
-            const reviewComments = prNumber
-              ? (await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 })).length
+
+            const review = pr
+              ? (await github.paginate(
+                  github.rest.pulls.listReviewComments,
+                  { owner, repo, pull_number: pr, per_page: 100 }
+                )).length
               : 0;
 
-            const total = commitComments + issueComments + reviewComments;
-            core.setOutput('commit', String(commitComments));
-            core.setOutput('issue', String(issueComments));
-            core.setOutput('review', String(reviewComments));
-            core.setOutput('total', String(total));
-            console.log({ commit: commitComments, issue: issueComments, review: reviewComments, total });
+            core.setOutput('commit', String(commit));
+            core.setOutput('issue', String(issue));
+            core.setOutput('review', String(review));
+            core.setOutput('total', String(commit + issue + review));
 
-      # --- Post comment only when total == 0 ---
-      - name: Post / Update PR comment (if 0 comments and PR)
+      # --- Comment only when NO comments exist ---
+      - name: Post / Update PR comment (if 0 comments)
         if: ${{ github.event_name == 'pull_request' && steps.count.outputs.total == '0' }}
         uses: peter-evans/create-or-update-comment@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUBTOKEN }}
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             🚀 **Preview for `${{ github.head_ref || github.ref_name }}`**
             🔗 ${{ steps.url.outputs.url }}
 
-      - name: Comment on commit (if 0 comments and push/manual)
+      - name: Comment on commit (if 0 comments)
         if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.count.outputs.total == '0' }}
         uses: peter-evans/commit-comment@v2
         with:
