@@ -1,82 +1,8 @@
-# name: Cloudflare Preview
+name: Count PR + Commit comments
+on:  workflow_dispatch
 
-# on:
-#   workflow_dispatch:
-#   push:
-#     branches-ignore: [main]
-#   pull_request:
-
-# jobs:
-#   preview:
-#     runs-on: ubuntu-latest
-
-#     permissions:
-#       contents: read
-#       pull-requests: write
-#       deployments: write
-
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-
-#       - name: Setup Node.js
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: 24
-#           cache: npm
-
-#       - name: Install dependencies
-#         run: npm ci
-
-#       - name: Build (static export)
-#         run: npm run build
-#         # next.config.ts must contain: export default { output: "export" }
-
-#       - name: Deploy to Cloudflare Pages
-#         id: cf
-#         uses: cloudflare/pages-action@v1
-#         with:
-#           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-#           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-#           projectName: ci-cd-static-page-preview
-#           directory: out
-#           gitHubToken: ${{ secrets.GITHUBTOKEN }}
-#           branch: ${{ github.head_ref || github.ref_name }}
-#           wranglerVersion: 4
-
-#       - name: Compute stable preview URL
-#         id: url
-#         run: |
-#           BRANCH="${{ github.head_ref || github.ref_name }}"
-#           SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
-#           echo "url=https://${SAFE}.ci-cd-static-page-preview.pages.dev" >> $GITHUB_OUTPUT
-
-#       # update or create a single PR comment (no duplicates)
-#       - name: Post / Update PR comment
-#         if: github.event_name == 'pull_request'
-#         uses: peter-evans/create-or-update-comment@v4
-#         with:
-#           token: ${{ secrets.GITHUBTOKEN }}          
-#           issue-number: ${{ github.event.pull_request.number }}
-#           body: |
-#             🚀 **Preview for `${{ github.head_ref || github.ref_name }}`**
-#             🔗 ${{ steps.url.outputs.url }}
-
-#       # comment on commit (push) and manual runs; requires GH_PAT
-#       - name: Comment on commit
-#         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-#         uses: peter-evans/commit-comment@v2
-#         with:
-#           token: ${{ secrets.GITHUBTOKEN }}
-#           body: |
-#             🚀 **Preview for `${{ github.ref_name || github.head_ref }}`**
-#             🔗 ${{ steps.url.outputs.url }}
-
-
-
-name: Count comments on current branch
-on: workflow_dispatch
 permissions:
+  contents: read
   issues: read
   pull-requests: read
 
@@ -84,31 +10,47 @@ jobs:
   count-comments:
     runs-on: ubuntu-latest
     steps:
-      - name: Count comments
-        id: count
-        uses: actions/github-script@v6
+      - uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUBTOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const owner = context.repo.owner, repo = context.repo.repo;
-            let prNumber = context.payload.pull_request?.number || null;
-            if (!prNumber) {
-              const branch = (context.ref || '').replace('refs/heads/', '');
-              const pulls = await github.rest.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: 'open', per_page: 100 });
-              if (pulls.data.length) prNumber = pulls.data[0].number;
-            }
-            if (!prNumber) {
-              core.setOutput('issue', '0'); core.setOutput('review', '0'); core.setOutput('total', '0');
-              return;
-            }
-            const issueComments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
-            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 });
-            core.setOutput('issue', String(issueComments.length));
-            core.setOutput('review', String(reviewComments.length));
-            core.setOutput('total', String(issueComments.length + reviewComments.length));
+            const { owner, repo } = context.repo;
+            const branch = context.ref.replace('refs/heads/', '');
 
-      - name: Print totals
-        run: |
-          echo "Issue comments: ${{ steps.count.outputs.issue }}"
-          echo "Review comments: ${{ steps.count.outputs.review }}"
-          echo "Total comments: ${{ steps.count.outputs.total }}"
+            let issue = 0, review = 0, commit = 0;
+
+            // --- commit comments (what you see in /commits/branch) ---
+            const commitComments = await github.paginate(
+              github.rest.repos.listCommentsForCommit,
+              { owner, repo, commit_sha: branch, per_page: 100 }
+            );
+            commit = commitComments.length;
+
+            // --- PR comments (if PR exists) ---
+            let pr = context.payload.pull_request?.number;
+            if (!pr) {
+              const prs = await github.rest.pulls.list({
+                owner, repo, head: `${owner}:${branch}`, state: 'open'
+              });
+              if (prs.data.length) pr = prs.data[0].number;
+            }
+
+            if (pr) {
+              const issueComments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: pr, per_page: 100 }
+              );
+              const reviewComments = await github.paginate(
+                github.rest.pulls.listReviewComments,
+                { owner, repo, pull_number: pr, per_page: 100 }
+              );
+              issue = issueComments.length;
+              review = reviewComments.length;
+            }
+
+            console.log({
+              commit,
+              issue,
+              review,
+              total: commit + issue + review
+            });
