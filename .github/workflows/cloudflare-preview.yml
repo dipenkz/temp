@@ -1,5 +1,5 @@
-name: Count PR + Commit comments
-on:  workflow_dispatch
+name: Count PR + Commit comments (fixed)
+on: workflow_dispatch
 
 permissions:
   contents: read
@@ -11,46 +11,71 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v6
+        id: count
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { owner, repo } = context.repo;
-            const branch = context.ref.replace('refs/heads/', '');
+            try {
+              const { owner, repo } = context.repo;
+              // branch: prefer PR head ref when available, otherwise from GITHUB_REF
+              const branch = context.payload.pull_request?.head?.ref || (context.ref || '').replace('refs/heads/', '');
+              console.log('Branch:', branch);
 
-            let issue = 0, review = 0, commit = 0;
-
-            // --- commit comments (what you see in /commits/branch) ---
-            const commitComments = await github.paginate(
-              github.rest.repos.listCommentsForCommit,
-              { owner, repo, commit_sha: branch, per_page: 100 }
-            );
-            commit = commitComments.length;
-
-            // --- PR comments (if PR exists) ---
-            let pr = context.payload.pull_request?.number;
-            if (!pr) {
-              const prs = await github.rest.pulls.list({
-                owner, repo, head: `${owner}:${branch}`, state: 'open'
-              });
-              if (prs.data.length) pr = prs.data[0].number;
-            }
-
-            if (pr) {
-              const issueComments = await github.paginate(
-                github.rest.issues.listComments,
-                { owner, repo, issue_number: pr, per_page: 100 }
+              // --- commit comments across all commits on the branch ---
+              const commits = await github.paginate(
+                github.rest.repos.listCommits,
+                { owner, repo, sha: branch, per_page: 100 }
               );
-              const reviewComments = await github.paginate(
-                github.rest.pulls.listReviewComments,
-                { owner, repo, pull_number: pr, per_page: 100 }
-              );
-              issue = issueComments.length;
-              review = reviewComments.length;
-            }
+              console.log(`Commits found on branch: ${commits.length}`);
 
-            console.log({
-              commit,
-              issue,
-              review,
-              total: commit + issue + review
-            });
+              let commitComments = 0;
+              for (const c of commits) {
+                const sha = c.sha;
+                const comments = await github.paginate(
+                  github.rest.repos.listCommentsForCommit,
+                  { owner, repo, commit_sha: sha, per_page: 100 }
+                );
+                if (comments.length) console.log(`commit ${sha} -> ${comments.length} comments`);
+                commitComments += comments.length;
+              }
+
+              // --- PR comments (if PR exists) ---
+              let prNumber = context.payload.pull_request?.number || null;
+              if (!prNumber) {
+                const prs = await github.rest.pulls.list({
+                  owner, repo, head: `${owner}:${branch}`, state: 'open', per_page: 100
+                });
+                if (prs.data.length) prNumber = prs.data[0].number;
+              }
+              let issueComments = 0, reviewComments = 0;
+              if (prNumber) {
+                console.log('PR found:', prNumber);
+                const ic = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 });
+                const rc = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 });
+                issueComments = ic.length;
+                reviewComments = rc.length;
+                console.log(`PR issue comments: ${issueComments}, PR review comments: ${reviewComments}`);
+              } else {
+                console.log('No open PR found for this branch.');
+              }
+
+              const total = commitComments + issueComments + reviewComments;
+              core.setOutput('commit', String(commitComments));
+              core.setOutput('issue', String(issueComments));
+              core.setOutput('review', String(reviewComments));
+              core.setOutput('total', String(total));
+
+              console.log({ commit: commitComments, issue: issueComments, review: reviewComments, total });
+            } catch (err) {
+              console.error('Error while counting comments:', err);
+              core.setOutput('commit', '0');
+              core.setOutput('issue', '0');
+              core.setOutput('review', '0');
+              core.setOutput('total', '0');
+            }
+      - name: Print totals
+        run: |
+          echo "Commit comments: ${{ steps.count.outputs.commit }}"
+          echo "PR issue comments: ${{ steps.count.outputs.issue }}"
+          echo "PR review comments: ${{ steps.count.outputs.review }}"
+          echo "Total comments: ${{ steps.count.outputs.total }}"
