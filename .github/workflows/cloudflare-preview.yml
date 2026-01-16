@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  deploy:
+  preview:
     runs-on: ubuntu-latest
 
     permissions:
@@ -25,13 +25,12 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install
+      - name: Install dependencies
         run: npm ci
 
       - name: Build (static export)
         run: npm run build
-        # next.config.ts must set: output: "export" so Next writes out/
-        # make changes in next.config.ts according to it 
+        # next.config.ts must contain: export default { output: "export" }
 
       - name: Deploy to Cloudflare Pages
         id: cf
@@ -43,30 +42,32 @@ jobs:
           directory: out
           gitHubToken: ${{ secrets.GITHUBTOKEN }}
           branch: ${{ github.head_ref || github.ref_name }}
+          wranglerVersion: 4
 
       - name: Compute stable preview URL
         id: url
         run: |
           BRANCH="${{ github.head_ref || github.ref_name }}"
-          # Normalize branch: lowercase and replace unsafe chars with '-'
           SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
           echo "url=https://${SAFE}.ci-cd-static-page-preview.pages.dev" >> $GITHUB_OUTPUT
 
-      - name: Comment preview URL on PR
+      # update or create a single PR comment (no duplicates)
+      - name: Post / Update PR comment
         if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@v4
         with:
-          token: ${{ secrets.GITHUBTOKEN }}
+          token: ${{ secrets.GITHUBTOKEN }}          
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             🚀 **Preview for `${{ github.head_ref || github.ref_name }}`**
             🔗 ${{ steps.url.outputs.url }}
 
-      - name: Comment preview URL on Commit
-        if: github.event_name == 'push'
+      # comment on commit (push) and manual runs; requires GH_PAT
+      - name: Comment on commit
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: peter-evans/commit-comment@v2
         with:
           token: ${{ secrets.GITHUBTOKEN }}
           body: |
-            🚀 **Preview for `${{ github.ref_name }}`**
+            🚀 **Preview for `${{ github.ref_name || github.head_ref }}`**
             🔗 ${{ steps.url.outputs.url }}
