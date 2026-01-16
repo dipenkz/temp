@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches-ignore: [main]
-  pull_request:
+  pull_request: 
 
 permissions:
   contents: write
@@ -113,7 +113,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && steps.count.outputs.total == '0' }}
         uses: peter-evans/create-or-update-comment@v4
         with:
-          token: ${{ secrets.GITHUBTOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             🚀 **Preview for `${{ github.head_ref || github.ref_name }}`**
