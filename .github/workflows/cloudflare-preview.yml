@@ -126,7 +126,7 @@ jobs:
 
       # 8) Post PR comment ONLY when total == 0
       - name: Post PR preview comment (only once)
-        if: ${{ github.event_name == 'pull_request' && steps.count.outputs.total == '0' }}
+        if: ${{ github.event_name == 'pull_request' && steps.count.outputs.review == '0' }}
         uses: peter-evans/create-or-update-comment@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
